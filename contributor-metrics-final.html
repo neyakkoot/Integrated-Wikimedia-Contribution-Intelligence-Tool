@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கித் திட்டம் ஆய்வி – Contributor Metrics (Final)</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body { font-family: sans-serif; padding: 20px; }
+input, button { padding: 6px; margin: 5px; }
+.badge { font-weight: bold; font-size: 1.05em; }
+ul { list-style: none; padding-left: 0; }
+li { margin: 4px 0; }
+table { border-collapse: collapse; margin-top: 10px; }
+th, td { border: 1px solid #999; padding: 6px 10px; text-align: center; }
+th { background: #f0f0f0; }
+</style>
+</head>
+
+<body>
+
+<h2>📊 விக்கித் திட்டம் ஆய்வி</h2>
+<h3>Tamil Wikisource – Contributor Metrics Tool</h3>
+
+<input type="text" id="username" placeholder="Wikisource User name">
+<button onclick="analyzeUser()">Analyze</button>
+<button onclick="exportJSON()">⬇️ Export JSON</button>
+<button onclick="exportCSV()">⬇️ Export CSV</button>
+
+<div id="output"></div>
+
+<canvas id="colorChart" height="180"></canvas>
+<canvas id="trendChart" height="220"></canvas>
+
+<script>
+/* ================= CONFIG ================= */
+const API = "https://ta.wikisource.org/w/api.php?origin=*";
+let LAST_RESULT = null;
+
+/* ================= MAIN ================= */
+async function analyzeUser() {
+  const user = document.getElementById("username").value.trim();
+  if (!user) return alert("பங்களிப்பாளர் பெயர் இடவும்");
+
+  document.getElementById("output").innerHTML = "⏳ தரவு பெறப்படுகிறது...";
+
+  const edits = await getUserEdits(user);
+  const colors = await getPageStatusesByPageId(edits);
+  const metrics = calculateMetrics(edits, colors);
+  const trends = await getMonthlyColorStatsByPageId(edits);
+
+  LAST_RESULT = { user, edits: edits.length, colors, metrics, trends };
+
+  displayResult(user, metrics);
+  renderColorChart(colors);
+  renderTrendChart(trends);
+}
+
+/* ================= USER EDITS ================= */
+async function getUserEdits(user) {
+  let edits = [];
+  let uccontinue = "";
+
+  do {
+    const url =
+      `${API}&action=query&list=usercontribs` +
+      `&ucuser=${encodeURIComponent(user)}` +
+      `&ucnamespace=104&uclimit=50&format=json` +
+      (uccontinue ? `&uccontinue=${uccontinue}` : "");
+
+    const data = await fetch(url).then(r => r.json());
+    if (data.query?.usercontribs)
+      edits = edits.concat(data.query.usercontribs);
+
+    uccontinue = data.continue?.uccontinue;
+  } while (uccontinue && edits.length < 200);
+
+  return edits;
+}
+
+/* ================= PAGE IDS ================= */
+function uniquePageIds(edits) {
+  const m = {};
+  edits.forEach(e => m[e.pageid] = true);
+  return Object.keys(m);
+}
+
+/* ================= COLOR STATS ================= */
+async function getPageStatusesByPageId(edits) {
+  const pageIds = uniquePageIds(edits);
+  let c = { red:0, yellow:0, purple:0, green:0 };
+
+  for (let pid of pageIds) {
+    const url =
+      `${API}&action=query&prop=proofread&pageids=${pid}&format=json`;
+
+    const data = await fetch(url).then(r => r.json());
+    const page = data.query.pages[pid];
+    if (!page || page.proofread === undefined) continue;
+
+    switch (page.proofread.level) {
+      case 0: c.red++; break;
+      case 1: c.yellow++; break;
+      case 2: c.purple++; break;
+      case 3: c.green++; break;
+    }
+  }
+  return c;
+}
+
+/* ================= METRICS ================= */
+function calculateMetrics(edits, c) {
+  const total = edits.length || 1;
+
+  const score =
+    ((c.yellow + c.green) / total) * 40 +
+    (c.green / total) * 40 +
+    Math.min(total / 50, 1) * 20;
+
+  const level =
+    score < 25 ? "Learner" :
+    score < 50 ? "Contributor" :
+    score < 75 ? "Skilled Editor" :
+    score < 90 ? "Expert" :
+    "Mentor‑ready";
+
+  return { total, score: Math.round(score), level };
+}
+
+/* ================= MONTHLY TRENDS ================= */
+async function getMonthlyColorStatsByPageId(edits) {
+  const t = {};
+
+  for (let e of edits) {
+    const d = new Date(e.timestamp);
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+
+    if (!t[key]) t[key] = { red:0, yellow:0, purple:0, green:0 };
+
+    const url =
+      `${API}&action=query&prop=proofread&pageids=${e.pageid}&format=json`;
+
+    const data = await fetch(url).then(r => r.json());
+    const page = data.query.pages[e.pageid];
+    if (!page || page.proofread === undefined) continue;
+
+    switch (page.proofread.level) {
+      case 0: t[key].red++; break;
+      case 1: t[key].yellow++; break;
+      case 2: t[key].purple++; break;
+      case 3: t[key].green++; break;
+    }
+  }
+  return t;
+}
+
+/* ================= DISPLAY ================= */
+function displayResult(user, m) {
+  document.getElementById("output").innerHTML = `
+    <h3>👤 ${user}</h3>
+    <p>✏️ மொத்த திருத்தங்கள்: ${m.total}</p>
+
+    <h4>🎨 நிற அடிப்படையிலான பங்களிப்பு</h4>
+    <ul>
+      <li style="color:red">🔴 சிவப்பு: ${LAST_RESULT.colors.red}</li>
+      <li style="color:goldenrod">🟡 மஞ்சள்: ${LAST_RESULT.colors.yellow}</li>
+      <li style="color:purple">🟣 ஊதா: ${LAST_RESULT.colors.purple}</li>
+      <li style="color:green">🟢 பச்சை: ${LAST_RESULT.colors.green}</li>
+    </ul>
+
+    <p class="badge">⭐ Quality Score: ${m.score} / 100</p>
+    <p class="badge">🏅 Contributor Level: ${m.level}</p>
+  `;
+}
+
+/* ================= CHARTS ================= */
+function renderColorChart(c) {
+  new Chart(document.getElementById("colorChart"), {
+    type: "pie",
+    data: {
+      labels: ["Red","Yellow","Purple","Green"],
+      datasets: [{
+        data: [c.red, c.yellow, c.purple, c.green],
+        backgroundColor: ["red","gold","purple","green"]
+      }]
+    }
+  });
+}
+
+function renderTrendChart(t) {
+  const months = Object.keys(t).sort();
+  new Chart(document.getElementById("trendChart"), {
+    type: "bar",
+    data: {
+      labels: months,
+      datasets: [
+        { label:"Green", data: months.map(m=>t[m].green), backgroundColor:"green" },
+        { label:"Yellow", data: months.map(m=>t[m].yellow), backgroundColor:"gold" }
+      ]
+    },
+    options: { scales:{ x:{stacked:true}, y:{stacked:true} } }
+  });
+}
+
+/* ================= EXPORT ================= */
+function exportJSON() {
+  const blob = new Blob([JSON.stringify(LAST_RESULT, null, 2)], {type:"application/json"});
+  download(blob, "contributor-metrics.json");
+}
+
+function exportCSV() {
+  const c = LAST_RESULT.colors;
+  const rows = [
+    ["Metric","Value"],
+    ["Total edits", LAST_RESULT.metrics.total],
+    ["Red", c.red],
+    ["Yellow", c.yellow],
+    ["Purple", c.purple],
+    ["Green", c.green],
+    ["Score", LAST_RESULT.metrics.score],
+    ["Level", LAST_RESULT.metrics.level]
+  ];
+  const csv = rows.map(r => r.join(",")).join("\n");
+  download(new Blob([csv], {type:"text/csv"}), "contributor-metrics.csv");
+}
+
+function download(blob, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+}
+</script>
+
+</body>
+</html>
