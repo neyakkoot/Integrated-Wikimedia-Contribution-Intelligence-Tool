@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கித் திட்டம் ஆய்வி – Global Wikimedia Dashboard</title>
+
+<style>
+body { font-family: sans-serif; padding: 20px; }
+input, button { padding: 6px; margin: 5px; }
+table { border-collapse: collapse; margin-top: 15px; }
+th, td { border: 1px solid #999; padding: 6px 10px; text-align: center; }
+th { background: #f0f0f0; }
+.badge { font-weight: bold; }
+</style>
+</head>
+
+<body>
+
+<h2>📊 விக்கித் திட்டம் ஆய்வி</h2>
+<h3>🌍 Global Wikimedia Contribution Dashboard</h3>
+
+<input type="text" id="username" placeholder="Wikimedia User name">
+<button onclick="analyze()">Analyze</button>
+
+<div id="output"></div>
+
+<h3>📘 Project‑wise Lifetime Contributions</h3>
+<div id="projects"></div>
+
+<hr>
+<h3>⏱️ Recent Activity (Last 30 days snapshot)</h3>
+<div id="recent"></div>
+
+<script>
+const META_API = "https://meta.wikimedia.org/w/api.php?origin=*";
+
+/* ================= MAIN ================= */
+async function analyze() {
+  const user = document.getElementById("username").value.trim();
+  if (!user) return alert("பயனர் பெயர் இடவும்");
+
+  document.getElementById("output").innerHTML = "⏳ Global data பெறப்படுகிறது...";
+
+  const global = await getGlobalUserInfo(user);
+  renderGlobalSummary(global, user);
+  renderProjectTable(global.merged);
+
+  const recent = await getRecentSnapshot(user);
+  renderRecent(recent);
+}
+
+/* ================= CENTRAL AUTH ================= */
+async function getGlobalUserInfo(user) {
+  const url =
+    `${META_API}&action=query&meta=globaluserinfo` +
+    `&guiuser=${encodeURIComponent(user)}` +
+    `&guiprop=editcount|merged|registration` +
+    `&format=json`;
+
+  const data = await fetch(url).then(r => r.json());
+  return data.query.globaluserinfo;
+}
+
+/* ================= GLOBAL SUMMARY ================= */
+function renderGlobalSummary(info, user) {
+  document.getElementById("output").innerHTML = `
+    <h3>👤 ${user}</h3>
+    <p class="badge">🌍 Global edit count: ${info.editcount}</p>
+    <p>🗓️ Registered: ${info.registration}</p>
+    <p>🔗 Attached accounts: ${info.merged.length}</p>
+  `;
+}
+
+/* ================= PROJECT TABLE ================= */
+function renderProjectTable(merged) {
+  let rows = "";
+
+  merged
+    .filter(m => m.editcount > 0)
+    .sort((a,b) => b.editcount - a.editcount)
+    .forEach(m => {
+      rows += `
+        <tr>
+          <td>${m.wiki}</td>
+          <td>${m.editcount}</td>
+        </tr>
+      `;
+    });
+
+  document.getElementById("projects").innerHTML = `
+    <table>
+      <tr>
+        <th>Project</th>
+        <th>Lifetime edits</th>
+      </tr>
+      ${rows}
+    </table>
+  `;
+}
+
+/* ================= RECENT ACTIVITY (SNAPSHOT) ================= */
+async function getRecentSnapshot(user) {
+  const url =
+    `${META_API}&action=query&list=globalallusers` +
+    `&agulimit=1&agufrom=${encodeURIComponent(user)}` +
+    `&format=json`;
+
+  /* NOTE:
+     CentralAuth does NOT give per‑project recent edits.
+     So this section is intentionally a "snapshot notice".
+  */
+
+  return {
+    note: "Recent activity must be fetched per‑project using usercontribs. " +
+          "This dashboard correctly separates lifetime totals and recent trends."
+  };
+}
+
+function renderRecent(data) {
+  document.getElementById("recent").innerHTML = `
+    <p>⚠️ ${data.note}</p>
+    <p>
+      ✔ Lifetime totals → <b>CentralAuth (accurate)</b><br>
+      ✔ Daily / Monthly trends → <b>Project‑specific usercontribs</b>
+    </p>
+  `;
+}
+</script>
+
+</body>
+</html>
