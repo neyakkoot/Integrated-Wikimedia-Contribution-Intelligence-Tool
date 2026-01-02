@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>Tamil Wikisource – Strategic Impact Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    :root { --primary: #1a73e8; --bg: #f8f9fa; }
+    body { font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); padding: 20px; line-height: 1.5; }
+    .container { max-width: 1000px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    .header { text-align: center; border-bottom: 2px solid #eee; margin-bottom: 25px; padding-bottom: 10px; }
+    input, button { padding: 10px; border-radius: 6px; border: 1px solid #ccc; margin: 5px; }
+    button { background: var(--primary); color: white; border: none; cursor: pointer; font-weight: bold; }
+    button:hover { background: #1557b0; }
+    .badge { display: inline-block; padding: 8px 15px; background: #e8f0fe; color: var(--primary); border-radius: 20px; font-weight: bold; margin: 5px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; }
+    th, td { border: 1px solid #ddd; padding: 12px; text-align: center; }
+    th { background: #f1f3f4; color: #5f6368; }
+    .red { color: #d93025; } .yellow { color: #f9ab00; } .purple { color: #a142f4; } .green { color: #188038; }
+    .mentor-ready { background: #e6ffed; border: 1px solid #28a745; color: #188038; padding: 15px; border-radius: 8px; margin-top: 15px; }
+</style>
+</head>
+
+<body>
+
+<div class="container">
+    <div class="header">
+        <h2>📊 விக்கிமூலம் மூலோபாய ஆய்வி (Impact Dashboard)</h2>
+        <p>பயனர் திறன் மற்றும் மாதாந்திர வளர்ச்சிப் போக்கு பகுப்பாய்வு</p>
+    </div>
+
+    <div style="text-align: center;">
+        <input type="text" id="username" placeholder="பயனர் பெயர் (எ.கா: Info-farmer)">
+        <button onclick="analyzeUser()">பகுப்பாய்வு செய்</button>
+    </div>
+
+    <div id="loader" style="display:none; text-align: center; margin: 20px;">⌛ தரவு சேகரிக்கப்படுகிறது... இது சில நொடிகள் எடுக்கலாம்...</div>
+    <div class="result" id="output"></div>
+</div>
+
+<script>
+const API = "https://ta.wikisource.org/w/api.php?origin=*";
+
+async function analyzeUser() {
+    const user = document.getElementById("username").value.trim();
+    if (!user) return alert("பயனர் பெயர் இடவும்");
+
+    document.getElementById("loader").style.display = "block";
+    document.getElementById("output").innerHTML = "";
+
+    try {
+        // 1. Get Edits
+        const edits = await getUserEdits(user);
+        if (edits.length === 0) throw new Error("பங்களிப்புகள் ஏதும் காணப்படவில்லை.");
+
+        // 2. Batch Process Quality Status
+        const { colorStats, monthlyTrends } = await getBatchStatus(edits);
+
+        // 3. Calculate Score
+        const metrics = calculateMetrics(edits.length, colorStats);
+
+        // 4. Render
+        displayResult(user, metrics, monthlyTrends);
+    } catch (err) {
+        document.getElementById("output").innerHTML = `<p style="color:red; text-align:center;">பிழை: ${err.message}</p>`;
+    }
+    document.getElementById("loader").style.display = "none";
+}
+
+async function getUserEdits(user) {
+    let edits = [];
+    let uccontinue = "";
+    // அதிகபட்சம் 500 திருத்தங்கள் வரை ஆய்வு செய்ய (Grant/Annual Reports-க்கு சிறந்தது)
+    const limit = 500; 
+
+    do {
+        const url = `${API}&action=query&list=usercontribs&ucuser=${encodeURIComponent(user)}&uclimit=50&ucnamespace=104&format=json${uccontinue ? `&uccontinue=${uccontinue}` : ""}`;
+        const data = await fetch(url).then(r => r.json());
+        if (data.query?.usercontribs) edits = edits.concat(data.query.usercontribs);
+        uccontinue = data.continue?.uccontinue;
+    } while (uccontinue && edits.length < limit);
+
+    return edits;
+}
+
+async function getBatchStatus(edits) {
+    let colorStats = { red: 0, yellow: 0, purple: 0, green: 0 };
+    let monthlyTrends = {};
+    const pageIds = edits.map(e => e.pageid);
+
+    // விக்கிப்பீடியா API ஒரு கோரிக்கையில் 50 பக்கங்களை ஆய்வு செய்ய அனுமதிக்கும்
+    for (let i = 0; i < pageIds.length; i += 50) {
+        const batch = pageIds.slice(i, i + 50).join('|');
+        const url = `${API}&action=query&prop=proofread&pageids=${batch}&format=json`;
+        const data = await fetch(url).then(r => r.json());
+        const pages = data.query.pages;
+
+        // வரைபடத் தரவுகளை இணைத்தல்
+        edits.slice(i, i + 50).forEach(edit => {
+            const pageInfo = pages[edit.pageid];
+            const d = new Date(edit.timestamp);
+            const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+            if (!monthlyTrends[monthKey]) {
+                monthlyTrends[monthKey] = { total: 0, red: 0, yellow: 0, purple: 0, green: 0 };
+            }
+            monthlyTrends[monthKey].total++;
+
+            if (pageInfo?.proofread) {
+                const lvl = pageInfo.proofread.level;
+                const colorMap = ["red", "yellow", "purple", "green"];
+                const color = colorMap[lvl];
+                colorStats[color]++;
+                monthlyTrends[monthKey][color]++;
+            }
+        });
+    }
+    return { colorStats, monthlyTrends };
+}
+
+function calculateMetrics(total, c) {
+    // Quality Score Logic: Green 100%, Purple 80%, Yellow 50%
+    const weightedScore = ((c.green * 1.0 + c.purple * 0.8 + c.yellow * 0.5) / total) * 100;
+    return { total, colors: c, score: Math.round(weightedScore) };
+}
+
+function displayResult(user, m, trends) {
+    const level = m.score < 30 ? "Learner (ஆரம்ப நிலை)" : 
+                  m.score < 60 ? "Contributor (பங்களிப்பாளர்)" : 
+                  m.score < 85 ? "Skilled Editor (திறமையானவர்)" : "Expert (வல்லுநர்)";
+
+    const isMentor = (m.score >= 85 && m.colors.green > 20);
+
+    document.getElementById("output").innerHTML = `
+        <h3>👤 பயனர்: ${user}</h3>
+        <p class="badge">⭐ தரம்: ${m.score} / 100</p>
+        <p class="badge">🏅 நிலை: ${level}</p>
+        
+        ${isMentor ? `<div class="mentor-ready">✅ <b>Mentor Pipeline:</b> இவர் புதிய பயனர்களுக்கு வழிகாட்டியாக (Mentor) செயல்படத் தகுதியானவர்.</div>` : ""}
+
+        <h4>📈 மாதாந்திர பங்களிப்பு அட்டவணை (Strategic Table)</h4>
+        <table>
+            <tr>
+                <th>Month</th><th>Total</th><th>🔴</th><th>🟡</th><th>🟣</th><th>🟢</th>
+            </tr>
+            ${Object.keys(trends).sort().reverse().map(month => {
+                const t = trends[month];
+                return `<tr>
+                    <td>${month}</td><td><b>${t.total}</b></td>
+                    <td class="red">${t.red}</td><td class="yellow">${t.yellow}</td>
+                    <td class="purple">${t.purple}</td><td class="green">${t.green}</td>
+                </tr>`;
+            }).join('')}
+        </table>
+    `;
+}
+</script>
+</body>
+</html>
