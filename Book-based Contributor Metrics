@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கிமூலம் புத்தக ஆய்வி - Book Metrics</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    :root { --p-green: #188038; --p-yellow: #f9ab00; --p-purple: #a142f4; }
+    body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; padding: 20px; }
+    .container { max-width: 1000px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    .search-box { background: #fff; padding: 20px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 25px; }
+    input { padding: 10px; width: 70%; border: 1px solid #ccc; border-radius: 4px; }
+    button { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+    .card { background: #fff; border: 1px solid #eee; padding: 20px; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { padding: 10px; border-bottom: 1px solid #eee; text-align: left; }
+    .progress-bar { height: 20px; background: #e0e0e0; border-radius: 10px; overflow: hidden; margin: 10px 0; }
+    .progress-fill { height: 100%; background: var(--p-green); transition: width 0.5s; }
+    .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; display: none; margin: 10px auto; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <div class="search-box">
+        <h2>📚 புத்தகவாரியான பங்களிப்பு ஆய்வி</h2>
+        <p>புத்தகத்தின் குறியீட்டுப் பக்கப் பெயரை உள்ளிடவும் (Index page name)</p>
+        <input type="text" id="bookTitle" placeholder="எ.கா: பாரதியார் கவிதைகள்.pdf">
+        <button onclick="analyzeBook()">ஆய்வு செய்</button>
+        <div id="loader" class="loader"></div>
+    </div>
+
+    <div id="results" style="display:none;">
+        <div class="card">
+            <h3>📖 புத்தகத்தின் ஒட்டுமொத்த நிலை</h3>
+            <div id="bookMeta"></div>
+            <div class="progress-bar"><div id="mainProgress" class="progress-fill"></div></div>
+            <p id="progressText" style="font-weight: bold; color: var(--p-green);"></p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="card">
+                <h3>🏆 பங்களிப்பாளர்கள் (Top Contributors)</h3>
+                <table id="contributorTable">
+                    <thead><tr><th>பயனர்</th><th>பக்கங்கள்</th><th>பங்கு %</th></tr></thead>
+                    <tbody id="contributorBody"></tbody>
+                </table>
+            </div>
+            <div class="card">
+                <h3>📊 தர விநியோகம்</h3>
+                <canvas id="qualityPie" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const API = "https://ta.wikisource.org/w/api.php?origin=*";
+let pieChart = null;
+
+async function analyzeBook() {
+    const book = document.getElementById("bookTitle").value.trim();
+    if (!book) return alert("புத்தகப் பெயரை உள்ளிடவும்!");
+
+    document.getElementById("loader").style.display = "block";
+    document.getElementById("results").style.display = "none";
+
+    try {
+        // 1. புத்தகத்தின் அனைத்துப் பக்கங்களின் ஐடிகளைப் பெறுதல் (Prefix search in Page namespace)
+        const prefix = "Page:" + book;
+        const url = `${API}&action=query&list=allpages&apprefix=${encodeURIComponent(book)}&apnamespace=104&aplimit=500&format=json`;
+        const res = await fetch(url).then(r => r.json());
+        const pages = res.query.allpages;
+
+        if (pages.length === 0) throw new Error("பக்கங்கள் கண்டறியப்படவில்லை. குறியீட்டுப் பெயரைச் சரிபார்க்கவும்.");
+
+        // 2. பக்கங்களின் தர நிலையைப் பெறுதல் (Batch)
+        const ids = pages.map(p => p.pageid);
+        const qualityStats = { red: 0, yellow: 0, purple: 0, green: 0, total: ids.length };
+        const contributors = {};
+
+        for (let i = 0; i < ids.length; i += 50) {
+            const batch = ids.slice(i, i + 50).join('|');
+            // தர நிலை மற்றும் கடைசித் தொகுப்பாளர் விவரம்
+            const qUrl = `${API}&action=query&prop=proofread|revisions&rvprop=user&pageids=${batch}&format=json`;
+            const qRes = await fetch(qUrl).then(r => r.json());
+            
+            Object.values(qRes.query.pages).forEach(p => {
+                if (p.proofread) {
+                    const lvl = p.proofread.level;
+                    if (lvl == 1) qualityStats.yellow++;
+                    else if (lvl == 2) qualityStats.purple++;
+                    else if (lvl == 3) qualityStats.green++;
+                    else qualityStats.red++;
+
+                    // கடைசித் தொகுப்பாளரைக் கணக்கிடுதல் (முக்கிய பங்களிப்பாளராகக் கருதி)
+                    const lastUser = p.revisions[0].user;
+                    if (lvl > 0) { // ஏதேனும் வேலை நடந்திருந்தால் மட்டும்
+                        contributors[lastUser] = (contributors[lastUser] || 0) + 1;
+                    }
+                }
+            });
+        }
+
+        renderBookResults(book, qualityStats, contributors);
+    } catch (err) {
+        alert("பிழை: " + err.message);
+    }
+    document.getElementById("loader").style.display = "none";
+}
+
+function renderBookResults(title, q, users) {
+    document.getElementById("results").style.display = "block";
+    
+    // Progress Calculation
+    const progress = Math.round((q.green / q.total) * 100);
+    document.getElementById("bookMeta").innerHTML = `<b>புத்தகம்:</b> ${title}<br><b>மொத்தப் பக்கங்கள்:</b> ${q.total}`;
+    document.getElementById("mainProgress").style.width = progress + "%";
+    document.getElementById("progressText").innerText = `முழுமையாக உறுதி செய்யப்பட்டது: ${progress}%`;
+
+    // Contributor Table
+    const sortedUsers = Object.entries(users).sort((a, b) => b[1] - a[1]);
+    let tableHtml = "";
+    sortedUsers.forEach(([name, count]) => {
+        const share = ((count / q.total) * 100).toFixed(1);
+        tableHtml += `<tr><td><b>${name}</b></td><td>${count}</td><td>${share}%</td></tr>`;
+    });
+    document.getElementById("contributorBody").innerHTML = tableHtml;
+
+    // Pie Chart
+    if (pieChart) pieChart.destroy();
+    pieChart = new Chart(document.getElementById("qualityPie"), {
+        type: 'doughnut',
+        data: {
+            labels: ['Red', 'Yellow', 'Purple', 'Green'],
+            datasets: [{
+                data: [q.red, q.yellow, q.purple, q.green],
+                backgroundColor: ['#ea4335', '#fbbc05', '#a142f4', '#34a853']
+            }]
+        }
+    });
+}
+</script>
+</body>
+</html>
