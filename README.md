@@ -1,0 +1,2 @@
+# Integrated-Wikimedia-Contribution-Intelligence-Tool
+Integrated Wikimedia Contribution Intelligence Tool is a web-based analytics tool that evaluates Wikimedia contributors using qualitative and quantitative metrics. It analyzes edit history, page status, contribution depth, and engagement patterns to generate meaningful insights for research, training, and community assessment across Wiki projects.
