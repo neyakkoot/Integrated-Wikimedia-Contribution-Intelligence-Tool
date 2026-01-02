@@ -2,104 +2,147 @@
 <html lang="ta">
 <head>
 <meta charset="UTF-8">
-<title>விக்கித் திட்டம் ஆய்வி – Contributor Metrics (Final)</title>
+<title>விக்கித் திட்டம் ஆய்வி – Complete & Bug‑Fixed</title>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
 body { font-family: sans-serif; padding: 20px; }
+h2, h3 { margin-top: 25px; }
 input, button { padding: 6px; margin: 5px; }
-.badge { font-weight: bold; font-size: 1.05em; }
-ul { list-style: none; padding-left: 0; }
-li { margin: 4px 0; }
+.badge { font-weight: bold; }
 table { border-collapse: collapse; margin-top: 10px; }
 th, td { border: 1px solid #999; padding: 6px 10px; text-align: center; }
 th { background: #f0f0f0; }
+ul { list-style: none; padding-left: 0; }
+li { margin: 4px 0; }
+.section { border-top: 3px solid #ccc; padding-top: 15px; margin-top: 20px; }
+.note { background:#fff8dc; padding:10px; margin-top:10px; }
 </style>
 </head>
 
 <body>
 
 <h2>📊 விக்கித் திட்டம் ஆய்வி</h2>
-<h3>Tamil Wikisource – Contributor Metrics Tool</h3>
 
-<input type="text" id="username" placeholder="Wikisource User name">
-<button onclick="analyzeUser()">Analyze</button>
-<button onclick="exportJSON()">⬇️ Export JSON</button>
-<button onclick="exportCSV()">⬇️ Export CSV</button>
+<input type="text" id="username" placeholder="Wikimedia User name">
+<button onclick="analyze()">Analyze</button>
+<button onclick="exportJSON()">⬇️ JSON</button>
+<button onclick="exportCSV()">⬇️ CSV</button>
 
-<div id="output"></div>
+<div id="global" class="section"></div>
+<div id="quality" class="section"></div>
 
-<canvas id="colorChart" height="180"></canvas>
-<canvas id="trendChart" height="220"></canvas>
+<canvas id="colorChart" height="160"></canvas>
+<canvas id="trendChart" height="200"></canvas>
 
 <script>
 /* ================= CONFIG ================= */
-const API = "https://ta.wikisource.org/w/api.php?origin=*";
-let LAST_RESULT = null;
+const META = "https://meta.wikimedia.org/w/api.php?origin=*";
+const WS   = "https://ta.wikisource.org/w/api.php?origin=*";
+let FINAL_DATA = {};
 
 /* ================= MAIN ================= */
-async function analyzeUser() {
+async function analyze() {
   const user = document.getElementById("username").value.trim();
-  if (!user) return alert("பங்களிப்பாளர் பெயர் இடவும்");
+  if (!user) return alert("பயனர் பெயர் இடவும்");
 
-  document.getElementById("output").innerHTML = "⏳ தரவு பெறப்படுகிறது...";
+  document.getElementById("global").innerHTML = "⏳ Global profile loading...";
+  document.getElementById("quality").innerHTML = "⏳ Wikisource quality loading...";
 
-  const edits = await getUserEdits(user);
-  const colors = await getPageStatusesByPageId(edits);
-  const metrics = calculateMetrics(edits, colors);
-  const trends = await getMonthlyColorStatsByPageId(edits);
+  /* SECTION A – Global */
+  const global = await getGlobalProfile(user);
+  renderGlobal(global, user);
 
-  LAST_RESULT = { user, edits: edits.length, colors, metrics, trends };
+  /* SECTION B – Quality */
+  const edits = await getWikisourceEdits(user);
+  const colors = await getColorStats(edits);
+  const metrics = calculateMetrics(edits.length, colors);
+  const trends = getMonthlyTrends(edits);
 
-  displayResult(user, metrics);
-  renderColorChart(colors);
-  renderTrendChart(trends);
+  renderQuality(edits.length, colors, metrics);
+  renderCharts(colors, trends);
+
+  FINAL_DATA = {
+    user,
+    global,
+    quality: {
+      analyzed_edits: edits.length,
+      colors,
+      metrics,
+      trends
+    }
+  };
 }
 
-/* ================= USER EDITS ================= */
-async function getUserEdits(user) {
-  let edits = [];
-  let uccontinue = "";
+/* ================= GLOBAL PROFILE ================= */
+async function getGlobalProfile(user) {
+  const url =
+    `${META}&action=query&meta=globaluserinfo` +
+    `&guiuser=${encodeURIComponent(user)}` +
+    `&guiprop=editcount|merged|registration&format=json`;
 
+  const data = await fetch(url).then(r => r.json());
+  return data.query.globaluserinfo;
+}
+
+function renderGlobal(info, user) {
+  let rows = "";
+  info.merged
+    .filter(m => m.editcount > 0)
+    .sort((a,b)=>b.editcount-a.editcount)
+    .forEach(m=>{
+      rows += `<tr><td>${m.wiki}</td><td>${m.editcount}</td></tr>`;
+    });
+
+  document.getElementById("global").innerHTML = `
+    <h3>🌍 Global Contribution Profile</h3>
+    <p class="badge">👤 ${user}</p>
+    <p>✏️ Global edits: <b>${info.editcount}</b></p>
+    <p>🗓️ Registered: ${info.registration}</p>
+    <p>🔗 Attached projects: ${info.merged.length}</p>
+
+    <table>
+      <tr><th>Project</th><th>Lifetime edits</th></tr>
+      ${rows}
+    </table>
+  `;
+}
+
+/* ================= WIKISOURCE EDITS ================= */
+async function getWikisourceEdits(user) {
+  let edits = [], cont = "";
   do {
     const url =
-      `${API}&action=query&list=usercontribs` +
+      `${WS}&action=query&list=usercontribs` +
       `&ucuser=${encodeURIComponent(user)}` +
       `&ucnamespace=104&uclimit=50&format=json` +
-      (uccontinue ? `&uccontinue=${uccontinue}` : "");
+      (cont ? `&uccontinue=${cont}` : "");
 
-    const data = await fetch(url).then(r => r.json());
-    if (data.query?.usercontribs)
-      edits = edits.concat(data.query.usercontribs);
+    const d = await fetch(url).then(r=>r.json());
+    if (d.query?.usercontribs)
+      edits = edits.concat(d.query.usercontribs);
 
-    uccontinue = data.continue?.uccontinue;
-  } while (uccontinue && edits.length < 200);
+    cont = d.continue?.uccontinue;
+  } while (cont && edits.length < 200);
 
   return edits;
 }
 
-/* ================= PAGE IDS ================= */
-function uniquePageIds(edits) {
-  const m = {};
-  edits.forEach(e => m[e.pageid] = true);
-  return Object.keys(m);
-}
-
-/* ================= COLOR STATS ================= */
-async function getPageStatusesByPageId(edits) {
-  const pageIds = uniquePageIds(edits);
+/* ================= COLOR STATS (BUG FIXED) ================= */
+async function getColorStats(edits) {
+  const ids = [...new Set(edits.map(e => e.pageid))];
   let c = { red:0, yellow:0, purple:0, green:0 };
 
-  for (let pid of pageIds) {
+  for (let id of ids) {
     const url =
-      `${API}&action=query&prop=proofread&pageids=${pid}&format=json`;
+      `${WS}&action=query&prop=proofread&pageids=${id}&format=json`;
 
-    const data = await fetch(url).then(r => r.json());
-    const page = data.query.pages[pid];
-    if (!page || page.proofread === undefined) continue;
+    const d = await fetch(url).then(r=>r.json());
+    const p = d.query.pages[id];
+    if (!p || p.proofread === undefined) continue;
 
-    switch (page.proofread.level) {
+    switch (p.proofread.level) {
       case 0: c.red++; break;
       case 1: c.yellow++; break;
       case 2: c.purple++; break;
@@ -110,9 +153,7 @@ async function getPageStatusesByPageId(edits) {
 }
 
 /* ================= METRICS ================= */
-function calculateMetrics(edits, c) {
-  const total = edits.length || 1;
-
+function calculateMetrics(total, c) {
   const score =
     ((c.yellow + c.green) / total) * 40 +
     (c.green / total) * 40 +
@@ -125,48 +166,33 @@ function calculateMetrics(edits, c) {
     score < 90 ? "Expert" :
     "Mentor‑ready";
 
-  return { total, score: Math.round(score), level };
+  return { score: Math.round(score), level };
 }
 
-/* ================= MONTHLY TRENDS ================= */
-async function getMonthlyColorStatsByPageId(edits) {
+/* ================= TRENDS ================= */
+function getMonthlyTrends(edits) {
   const t = {};
-
-  for (let e of edits) {
-    const d = new Date(e.timestamp);
-    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-
-    if (!t[key]) t[key] = { red:0, yellow:0, purple:0, green:0 };
-
-    const url =
-      `${API}&action=query&prop=proofread&pageids=${e.pageid}&format=json`;
-
-    const data = await fetch(url).then(r => r.json());
-    const page = data.query.pages[e.pageid];
-    if (!page || page.proofread === undefined) continue;
-
-    switch (page.proofread.level) {
-      case 0: t[key].red++; break;
-      case 1: t[key].yellow++; break;
-      case 2: t[key].purple++; break;
-      case 3: t[key].green++; break;
-    }
-  }
+  edits.forEach(e => {
+    const m = e.timestamp.slice(0,7);
+    t[m] = (t[m] || 0) + 1;
+  });
   return t;
 }
 
-/* ================= DISPLAY ================= */
-function displayResult(user, m) {
-  document.getElementById("output").innerHTML = `
-    <h3>👤 ${user}</h3>
-    <p>✏️ மொத்த திருத்தங்கள்: ${m.total}</p>
+/* ================= RENDER QUALITY ================= */
+function renderQuality(n, c, m) {
+  document.getElementById("quality").innerHTML = `
+    <h3>📘 Wikisource Quality Analysis</h3>
+    <div class="note">
+      ⚠️ Analysis based on <b>last ${n} Page edits</b>
+    </div>
 
-    <h4>🎨 நிற அடிப்படையிலான பங்களிப்பு</h4>
+    <p>✏️ Analyzed edits: ${n}</p>
     <ul>
-      <li style="color:red">🔴 சிவப்பு: ${LAST_RESULT.colors.red}</li>
-      <li style="color:goldenrod">🟡 மஞ்சள்: ${LAST_RESULT.colors.yellow}</li>
-      <li style="color:purple">🟣 ஊதா: ${LAST_RESULT.colors.purple}</li>
-      <li style="color:green">🟢 பச்சை: ${LAST_RESULT.colors.green}</li>
+      <li style="color:red">🔴 Red: ${c.red}</li>
+      <li style="color:goldenrod">🟡 Yellow: ${c.yellow}</li>
+      <li style="color:purple">🟣 Purple: ${c.purple}</li>
+      <li style="color:green">🟢 Green: ${c.green}</li>
     </ul>
 
     <p class="badge">⭐ Quality Score: ${m.score} / 100</p>
@@ -175,60 +201,53 @@ function displayResult(user, m) {
 }
 
 /* ================= CHARTS ================= */
-function renderColorChart(c) {
-  new Chart(document.getElementById("colorChart"), {
-    type: "pie",
-    data: {
-      labels: ["Red","Yellow","Purple","Green"],
-      datasets: [{
-        data: [c.red, c.yellow, c.purple, c.green],
-        backgroundColor: ["red","gold","purple","green"]
+function renderCharts(c, t) {
+  new Chart(colorChart, {
+    type:"pie",
+    data:{
+      labels:["Red","Yellow","Purple","Green"],
+      datasets:[{
+        data:[c.red,c.yellow,c.purple,c.green],
+        backgroundColor:["red","gold","purple","green"]
+      }]
+    }
+  });
+
+  new Chart(trendChart,{
+    type:"bar",
+    data:{
+      labels:Object.keys(t),
+      datasets:[{
+        label:"Edits",
+        data:Object.values(t),
+        backgroundColor:"#4CAF50"
       }]
     }
   });
 }
 
-function renderTrendChart(t) {
-  const months = Object.keys(t).sort();
-  new Chart(document.getElementById("trendChart"), {
-    type: "bar",
-    data: {
-      labels: months,
-      datasets: [
-        { label:"Green", data: months.map(m=>t[m].green), backgroundColor:"green" },
-        { label:"Yellow", data: months.map(m=>t[m].yellow), backgroundColor:"gold" }
-      ]
-    },
-    options: { scales:{ x:{stacked:true}, y:{stacked:true} } }
-  });
-}
-
 /* ================= EXPORT ================= */
-function exportJSON() {
-  const blob = new Blob([JSON.stringify(LAST_RESULT, null, 2)], {type:"application/json"});
-  download(blob, "contributor-metrics.json");
+function exportJSON(){
+  download(JSON.stringify(FINAL_DATA,null,2),"metrics.json","application/json");
 }
-
-function exportCSV() {
-  const c = LAST_RESULT.colors;
+function exportCSV(){
+  const q = FINAL_DATA.quality;
   const rows = [
     ["Metric","Value"],
-    ["Total edits", LAST_RESULT.metrics.total],
-    ["Red", c.red],
-    ["Yellow", c.yellow],
-    ["Purple", c.purple],
-    ["Green", c.green],
-    ["Score", LAST_RESULT.metrics.score],
-    ["Level", LAST_RESULT.metrics.level]
+    ["Analyzed edits", q.analyzed_edits],
+    ["Red", q.colors.red],
+    ["Yellow", q.colors.yellow],
+    ["Purple", q.colors.purple],
+    ["Green", q.colors.green],
+    ["Score", q.metrics.score],
+    ["Level", q.metrics.level]
   ];
-  const csv = rows.map(r => r.join(",")).join("\n");
-  download(new Blob([csv], {type:"text/csv"}), "contributor-metrics.csv");
+  download(rows.map(r=>r.join(",")).join("\n"),"metrics.csv","text/csv");
 }
-
-function download(blob, filename) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
+function download(data,name,type){
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([data],{type}));
+  a.download=name;
   a.click();
 }
 </script>
