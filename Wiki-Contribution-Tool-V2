@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கித் திட்டம் ஆய்வி – Advanced Edition</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    :root { --primary: #2563eb; --success: #059669; --warning: #d97706; --danger: #dc2626; }
+    body { font-family: 'Inter', sans-serif; background: #f8fafc; padding: 20px; color: #1e293b; }
+    .container { max-width: 1000px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+    .card { border: 1px solid #e2e8f0; padding: 20px; border-radius: 8px; background: #fff; }
+    .badge-expert { background: #dcfce7; color: #166534; padding: 4px 12px; border-radius: 999px; font-weight: bold; }
+    .stat-box { text-align: center; padding: 15px; border-radius: 8px; color: white; }
+    input { width: 60%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; }
+    button { padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; transition: 0.2s; }
+    .btn-analyze { background: var(--primary); color: white; }
+    .btn-export { background: #64748b; color: white; }
+    table { width: 100%; margin-top: 15px; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 10px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    .mentor-tag { border-left: 4px solid var(--success); padding-left: 10px; background: #f0fdf4; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <h2>📊 விக்கித் திட்டம் ஆய்வி: Contributors Metric Tool</h2>
+    
+    <div style="margin-bottom: 20px;">
+        <input type="text" id="username" placeholder="பயனர் பெயரை உள்ளிடவும் (எ.கா: Info-farmer)">
+        <button class="btn-analyze" onclick="analyze()">ஆய்வு செய்</button>
+        <button class="btn-export" onclick="exportJSON()">JSON</button>
+    </div>
+
+    <div id="loader" style="display:none; color: var(--primary);">தரவுகள் பகுப்பாய்வு செய்யப்படுகின்றன...</div>
+
+    <div id="results" style="display:none;">
+        <div id="globalInfo" class="card"></div>
+
+        <div class="grid">
+            <div class="card">
+                <h3>⭐ தனிநபர் தர மதிப்பீடு (Quality Metric)</h3>
+                <div id="metricsUI"></div>
+            </div>
+
+            <div class="card">
+                <h3>🎨 நிறம் சார்ந்த பங்களிப்பு புள்ளிவிவரம்</h3>
+                <canvas id="colorPieChart"></canvas>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top:20px;">
+            <h3>📚 திட்ட மேலோட்டம் (Community Analysis Preview)</h3>
+            <div id="communityPreview"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+const WS = "https://ta.wikisource.org/w/api.php?origin=*";
+const META = "https://meta.wikimedia.org/w/api.php?origin=*";
+
+async function analyze() {
+    const user = document.getElementById("username").value.trim();
+    if(!user) return;
+    
+    document.getElementById("loader").style.display = "block";
+    document.getElementById("results").style.display = "none";
+
+    try {
+        // 1. Fetch Global Info
+        const gInfo = await fetch(`${META}&action=query&meta=globaluserinfo&guiuser=${user}&guiprop=editcount|merged&format=json`).then(r => r.json());
+        const global = gInfo.query.globaluserinfo;
+
+        // 2. Fetch Last 200 Wikisource Page Edits
+        const edits = await fetch(`${WS}&action=query&list=usercontribs&ucuser=${user}&ucnamespace=104&uclimit=200&format=json`).then(r => r.json());
+        const contribs = edits.query.usercontribs;
+
+        // 3. Batched Color Analysis
+        const colorData = await getBatchColors(contribs);
+        
+        // 4. Calculate Advanced Metrics
+        const metrics = calculateMentorLogic(colorData, contribs.length);
+
+        renderUI(global, colorData, metrics, contribs.length);
+    } catch (e) {
+        alert("தரவுகளைப் பெறுவதில் பிழை!");
+    }
+    
+    document.getElementById("loader").style.display = "none";
+    document.getElementById("results").style.display = "block";
+}
+
+async function getBatchColors(edits) {
+    const ids = [...new Set(edits.map(e => e.pageid))];
+    let stats = { red:0, yellow:0, purple:0, green:0 };
+    
+    for (let i = 0; i < ids.length; i += 50) {
+        const batch = ids.slice(i, i+50).join('|');
+        const res = await fetch(`${WS}&action=query&prop=proofread&pageids=${batch}&format=json`).then(r => r.json());
+        Object.values(res.query.pages).forEach(p => {
+            if(p.proofread) {
+                const lvl = p.proofread.level;
+                if(lvl == 0) stats.red++;
+                else if(lvl == 1) stats.yellow++;
+                else if(lvl == 2) stats.purple++;
+                else if(lvl == 3) stats.green++;
+            }
+        });
+    }
+    return stats;
+}
+
+function calculateMentorLogic(c, total) {
+    if(total === 0) return { score: 0, rank: "N/A" };
+
+    /* Logic: 
+       - Green (Validation) gets max weightage (1.0)
+       - Purple (Verification) gets 0.7
+       - Yellow (Proofreading) gets 0.4
+       - Experience bonus based on total volume
+    */
+    const weightedSum = (c.green * 1.0) + (c.purple * 0.7) + (c.yellow * 0.4);
+    const baseScore = (weightedSum / total) * 100;
+    const volumeBonus = Math.min(total / 100, 10); // Max 10 points for volume
+    
+    const finalScore = Math.round(baseScore + volumeBonus);
+
+    let rank = "தொடக்கநிலை";
+    let mentorReady = false;
+
+    if(finalScore > 85 && c.green > 20) {
+        rank = "வழிகாட்டி (Mentor-Ready)";
+        mentorReady = true;
+    } else if(finalScore > 70) {
+        rank = "முதிர்ந்த பங்களிப்பாளர் (Expert)";
+    } else if(finalScore > 40) {
+        rank = "ஆர்வலர் (Active Contributor)";
+    }
+
+    return { score: finalScore, rank, mentorReady };
+}
+
+function renderUI(global, colors, metrics, total) {
+    // Global Card
+    document.getElementById("globalInfo").innerHTML = `
+        <h3>🌍 உலகளாவிய பயனர் விவரம்: ${global.name}</h3>
+        <p>மொத்த விக்கித் திட்ட பங்களிப்புகள்: <b>${global.editcount}</b></p>
+    `;
+
+    // Metrics Card
+    document.getElementById("metricsUI").innerHTML = `
+        <div style="font-size: 2rem; font-weight: bold; color: var(--primary);">${metrics.score}/100</div>
+        <div class="badge-expert">${metrics.rank}</div>
+        <p>ஆய்வு செய்யப்பட்ட மெய்ப்பு திருத்தங்கள்: ${total}</p>
+        ${metrics.mentorReady ? `<div class="mentor-tag">✅ இவர் புதிய பயனர்களுக்கு <b>வழிகாட்டியாக (Mentor)</b> செயல்பட தகுதியானவர்.</div>` : ""}
+    `;
+
+    // Community Preview
+    document.getElementById("communityPreview").innerHTML = `
+        <p>இந்தத் தரவுகளைக் கொண்டு ஒரு புத்தகத்தின் அல்லது ஒரு குறிப்பிட்ட காலப்பகுதியின் சமூக பங்களிப்பை (Community Analysis) ஒப்பிட முடியும்.</p>
+        <table>
+            <tr><th>நிலை</th><th>பக்கங்களின் எண்ணிக்கை</th><th>சதவீதம்</th></tr>
+            <tr><td>உறுதி செய்யப்பட்டவை (Green)</td><td>${colors.green}</td><td>${Math.round(colors.green/total*100)}%</td></tr>
+            <tr><td>சரிபார்க்கப்பட்டவை (Purple)</td><td>${colors.purple}</td><td>${Math.round(colors.purple/total*100)}%</td></tr>
+        </table>
+    `;
+
+    // Chart
+    new Chart(document.getElementById("colorPieChart"), {
+        type: 'pie',
+        data: {
+            labels: ['Red', 'Yellow', 'Purple', 'Green'],
+            datasets: [{
+                data: [colors.red, colors.yellow, colors.purple, colors.green],
+                backgroundColor: ['#dc2626', '#fbbf24', '#a855f7', '#22c55e']
+            }]
+        }
+    });
+}
+</script>
+</body>
+</html>
