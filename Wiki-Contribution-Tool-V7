@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கிமூலம் சமூக ஆய்வி – Multi-User Comparison</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    :root { --primary: #1a73e8; --success: #34a853; --warning: #fbbc04; --danger: #ea4335; }
+    body { font-family: 'Inter', sans-serif; background: #f8f9fa; margin: 0; padding: 20px; }
+    .container { max-width: 1200px; margin: auto; }
+    
+    .search-box { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); text-align: center; margin-bottom: 25px; }
+    input { padding: 12px; width: 350px; border: 1px solid #ddd; border-radius: 6px; outline: none; }
+    
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+    
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { padding: 12px; border-bottom: 1px solid #eee; text-align: center; }
+    th { background: #f8f9fa; font-weight: 600; color: #5f6368; }
+    
+    .rank-expert { color: var(--success); font-weight: bold; }
+    .rank-active { color: var(--primary); font-weight: bold; }
+    
+    .btn-compare { background: var(--primary); color: white; border: none; padding: 12px 25px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+    .loader { border: 4px solid #f3f3f3; border-top: 4px solid var(--primary); border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; display: none; margin: 15px auto; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <div class="search-box">
+        <h1>👥 சமூகப் பங்களிப்பு ஒப்பாய்வி</h1>
+        <p>பல பயனர்களின் பெயர்களை கமாவால் (,) பிரித்து உள்ளிடவும்</p>
+        <input type="text" id="userList" placeholder="பயனர் 1, பயனர் 2, பயனர் 3">
+        <button class="btn-compare" onclick="compareUsers()">ஒப்பிடு</button>
+        <div id="loader" class="loader"></div>
+    </div>
+
+    <div id="compareResults" style="display: none;">
+        <div class="card" style="margin-bottom: 20px;">
+            <h3>🏅 தரவரிசை (Leaderboard)</h3>
+            <table id="leaderboard">
+                <thead>
+                    <tr>
+                        <th>பயனர்</th>
+                        <th>மொத்தத் தொகுப்புகள்</th>
+                        <th>🟢 பச்சை</th>
+                        <th>Quality Score</th>
+                        <th>நிலை (Level)</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboardBody"></tbody>
+            </table>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <h3>📊 தர ஒப்பீடு (Quality Comparison)</h3>
+                <canvas id="compareChart"></canvas>
+            </div>
+
+            <div class="card">
+                <h3>💡 சமூகக் குறிப்புகள் (Community Insights)</h3>
+                <div id="insights"></div>
+                <hr>
+                <p style="font-size: 0.9rem; color: #666;">
+                    * <b>பயிற்சித் தேவை:</b> மஞ்சள்/ஊதா பக்கங்கள் அதிகமாகவும் பச்சை குறைவாகவும் இருந்தால் சரிபார்ப்புப் பயிற்சி தேவை.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const WS_API = "https://ta.wikisource.org/w/api.php?origin=*";
+let compareChartInstance = null;
+
+async function compareUsers() {
+    const input = document.getElementById("userList").value;
+    const users = input.split(',').map(u => u.trim()).filter(u => u);
+    if (users.length === 0) return alert("குறைந்தது ஒரு பெயராவது இடவும்!");
+
+    document.getElementById("loader").style.display = "block";
+    document.getElementById("compareResults").style.display = "none";
+
+    const allStats = [];
+
+    for (const user of users) {
+        try {
+            const edits = await fetchEdits(user);
+            const stats = await getBatchStatus(edits);
+            const score = calculateScore(stats, edits.length);
+            allStats.push({ user, total: edits.length, ...stats, score });
+        } catch (e) { console.error(`Error with ${user}`, e); }
+    }
+
+    renderComparison(allStats);
+    document.getElementById("loader").style.display = "none";
+    document.getElementById("compareResults").style.display = "block";
+}
+
+async function fetchEdits(user) {
+    const url = `${WS_API}&action=query&list=usercontribs&ucuser=${user}&uclimit=100&ucnamespace=104&format=json`;
+    const res = await fetch(url).then(r => r.json());
+    return res.query.usercontribs || [];
+}
+
+async function getBatchStatus(edits) {
+    let s = { red: 0, yellow: 0, purple: 0, green: 0 };
+    const ids = edits.map(e => e.pageid);
+    for (let i = 0; i < ids.length; i += 50) {
+        const batch = ids.slice(i, i+50).join('|');
+        const res = await fetch(`${WS_API}&action=query&prop=proofread&pageids=${batch}&format=json`).then(r => r.json());
+        Object.values(res.query.pages).forEach(p => {
+            if (p.proofread) {
+                const lvl = p.proofread.level;
+                if (lvl === 0) s.red++; else if (lvl === 1) s.yellow++;
+                else if (lvl === 2) s.purple++; else if (lvl === 3) s.green++;
+            }
+        });
+    }
+    return s;
+}
+
+function calculateScore(s, total) {
+    if (total === 0) return 0;
+    return Math.round(((s.green * 1.0 + s.purple * 0.7 + s.yellow * 0.4) / total) * 100);
+}
+
+function renderComparison(data) {
+    // 1. Leaderboard
+    data.sort((a, b) => b.score - a.score);
+    let body = "";
+    data.forEach(d => {
+        let level = d.score > 80 ? "Expert" : d.score > 50 ? "Active" : "Learner";
+        body += `<tr>
+            <td><b>${d.user}</b></td>
+            <td>${d.total}</td>
+            <td style="color:green"><b>${d.green}</b></td>
+            <td>${d.score}</td>
+            <td class="rank-${level.toLowerCase()}">${level}</td>
+        </tr>`;
+    });
+    document.getElementById("leaderboardBody").innerHTML = body;
+
+    // 2. Chart
+    if (compareChartInstance) compareChartInstance.destroy();
+    compareChartInstance = new Chart(document.getElementById("compareChart"), {
+        type: 'bar',
+        data: {
+            labels: data.map(d => d.user),
+            datasets: [
+                { label: 'Validated (Green)', data: data.map(d => d.green), backgroundColor: '#34a853' },
+                { label: 'Proofread (Yellow)', data: data.map(d => d.yellow), backgroundColor: '#fbbc04' }
+            ]
+        }
+    });
+
+    // 3. Strategic Insights
+    let insightHtml = "<ul>";
+    data.forEach(d => {
+        if (d.yellow > d.green * 3) {
+            insightHtml += `<li>⚠️ <b>${d.user}:</b> மெய்ப்பு அதிகம் செய்துள்ளார், ஆனால் சரிபார்ப்பு (Validation) தேக்கம் உள்ளது.</li>`;
+        }
+        if (d.score > 85 && d.green > 15) {
+            insightHtml += `<li>⭐ <b>${d.user}:</b> குழு வழிகாட்டியாக (Mentor) செயல்பட சிறந்தவர்.</li>`;
+        }
+    });
+    document.getElementById("insights").innerHTML = insightHtml + "</ul>";
+}
+</script>
+</body>
+</html>
