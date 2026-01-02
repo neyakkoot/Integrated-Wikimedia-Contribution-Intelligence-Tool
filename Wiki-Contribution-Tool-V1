@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கித் திட்டம் ஆய்வி – Optimized Version</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; line-height: 1.6; background-color: #f4f7f6; }
+    .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    h2, h3 { color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+    input, button { padding: 10px; margin: 5px 2px; border: 1px solid #ddd; border-radius: 4px; }
+    button { background-color: #3498db; color: white; cursor: pointer; transition: 0.3s; border: none; }
+    button:hover { background-color: #2980b9; }
+    .badge { font-weight: bold; background: #e8f4fd; padding: 5px 10px; border-radius: 4px; display: inline-block; margin: 5px 0; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+    th { background: #f8f9fa; }
+    .section { border-top: 3px solid #3498db; padding-top: 20px; margin-top: 30px; }
+    .note { background:#fff3cd; color: #856404; padding: 15px; border-radius: 4px; margin: 15px 0; border-left: 5px solid #ffeeba; }
+    canvas { max-width: 100%; margin-top: 20px; }
+</style>
+</head>
+
+<body>
+
+<div class="container">
+    <h2>📊 விக்கித் திட்டம் ஆய்வி (ஆய்வுக்கருவி)</h2>
+
+    <input type="text" id="username" placeholder="விக்கிப்பீடியா பயனர் பெயர்">
+    <button onclick="analyze()">ஆய்வு செய்</button>
+    <button onclick="exportJSON()" style="background:#27ae60">⬇️ JSON</button>
+    <button onclick="exportCSV()" style="background:#27ae60">⬇️ CSV</button>
+
+    <div id="status"></div>
+    <div id="global" class="section"></div>
+    <div id="quality" class="section"></div>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 20px;">
+        <div style="flex: 1; min-width: 300px;"><canvas id="colorChart"></canvas></div>
+        <div style="flex: 1; min-width: 300px;"><canvas id="trendChart"></canvas></div>
+    </div>
+</div>
+
+<script>
+const META = "https://meta.wikimedia.org/w/api.php?origin=*";
+const WS   = "https://ta.wikisource.org/w/api.php?origin=*";
+let FINAL_DATA = {};
+let colorChartInstance = null;
+let trendChartInstance = null;
+
+async function analyze() {
+    const user = document.getElementById("username").value.trim();
+    if (!user) return alert("பயனர் பெயர் இடவும்");
+
+    document.getElementById("status").innerHTML = "⌛ தரவுகள் சேகரிக்கப்படுகின்றன... தயவுசெய்து காத்திருக்கவும்.";
+    
+    try {
+        /* A. Global Data */
+        const global = await getGlobalProfile(user);
+        if (!global) throw new Error("பயனர் காணப்படவில்லை");
+        renderGlobal(global, user);
+
+        /* B. Wikisource Edits */
+        const edits = await getWikisourceEdits(user);
+        const colors = await getBatchedColorStats(edits);
+        const metrics = calculateMetrics(edits.length, colors);
+        const trends = getMonthlyTrends(edits);
+
+        renderQuality(edits.length, colors, metrics);
+        renderCharts(colors, trends);
+
+        FINAL_DATA = { user, global, quality: { analyzed_edits: edits.length, colors, metrics, trends } };
+        document.getElementById("status").innerHTML = "✅ ஆய்வு முடிந்தது!";
+    } catch (err) {
+        document.getElementById("status").innerHTML = "❌ பிழை: " + err.message;
+    }
+}
+
+async function getGlobalProfile(user) {
+    const url = `${META}&action=query&meta=globaluserinfo&guiuser=${encodeURIComponent(user)}&guiprop=editcount|merged|registration&format=json`;
+    const data = await fetch(url).then(r => r.json());
+    return data.query.globaluserinfo.id ? data.query.globaluserinfo : null;
+}
+
+function renderGlobal(info, user) {
+    let rows = info.merged
+        .filter(m => m.editcount > 0)
+        .sort((a,b) => b.editcount - a.editcount)
+        .map(m => `<tr><td>${m.wiki}</td><td>${m.editcount.toLocaleString()}</td></tr>`)
+        .join("");
+
+    document.getElementById("global").innerHTML = `
+        <h3>🌍 உலகளாவிய பங்களிப்பு விவரம்</h3>
+        <p class="badge">👤 பயனர்: ${user}</p>
+        <p>✏️ மொத்தத் தொகுப்புகள்: <b>${info.editcount.toLocaleString()}</b></p>
+        <p>🗓️ இணைந்த நாள்: ${new Date(info.registration).toLocaleDateString('ta-IN')}</p>
+        <table>
+            <tr><th>திட்டம்</th><th>தொகுப்புகள்</th></tr>
+            ${rows}
+        </table>
+    `;
+}
+
+async function getWikisourceEdits(user) {
+    let edits = [], cont = "";
+    // 500 தொகுப்புகள் வரை ஆய்வு செய்ய அனுமதிக்கும்
+    const limit = 500; 
+    
+    do {
+        const url = `${WS}&action=query&list=usercontribs&ucuser=${encodeURIComponent(user)}&ucnamespace=104&uclimit=50&format=json${cont ? `&uccontinue=${cont}` : ""}`;
+        const d = await fetch(url).then(r => r.json());
+        if (d.query?.usercontribs) edits = edits.concat(d.query.usercontribs);
+        cont = d.continue?.uccontinue;
+    } while (cont && edits.length < limit);
+
+    return edits;
+}
+
+/* மேம்படுத்தப்பட்ட வேகமான கலர் செக் (Batch Process) */
+async function getBatchedColorStats(edits) {
+    const ids = [...new Set(edits.map(e => e.pageid))];
+    let c = { red: 0, yellow: 0, purple: 0, green: 0 };
+
+    for (let i = 0; i < ids.length; i += 50) {
+        const batch = ids.slice(i, i + 50).join('|');
+        const url = `${WS}&action=query&prop=proofread&pageids=${batch}&format=json`;
+        const d = await fetch(url).then(r => r.json());
+        
+        if (d.query?.pages) {
+            Object.values(d.query.pages).forEach(p => {
+                if (p.proofread) {
+                    switch (p.proofread.level) {
+                        case 0: c.red++; break;
+                        case 1: c.yellow++; break;
+                        case 2: c.purple++; break;
+                        case 3: c.green++; break;
+                    }
+                }
+            });
+        }
+    }
+    return c;
+}
+
+function calculateMetrics(total, c) {
+    if (total === 0) return { score: 0, level: "No Edits" };
+    // குவாலிட்டி ஸ்கோர் சூத்திரம்
+    const score = ((c.yellow * 0.5 + c.purple * 0.8 + c.green * 1.0) / total) * 100;
+    const level = score < 30 ? "ஆரம்ப நிலை" : score < 60 ? "பங்களிப்பாளர்" : score < 85 ? "திறமையானவர்" : "வல்லுநர்";
+    return { score: Math.round(score), level };
+}
+
+function getMonthlyTrends(edits) {
+    const t = {};
+    edits.forEach(e => {
+        const m = e.timestamp.slice(0, 7);
+        t[m] = (t[m] || 0) + 1;
+    });
+    return t;
+}
+
+function renderQuality(n, c, m) {
+    document.getElementById("quality").innerHTML = `
+        <h3>📘 விக்கிமூலம் தர ஆய்வு</h3>
+        <div class="note">ஆய்வுக்கு எடுத்துக்கொள்ளப்பட்ட பக்கங்கள்: <b>${n}</b></div>
+        <ul>
+            <li>🔴 சிவப்பு (தரம் பிரிக்கப்படாதவை): ${c.red}</li>
+            <li>🟡 மஞ்சள் (மெய்ப்பு பார்க்கப்பட்டவை): ${c.yellow}</li>
+            <li>🟣 ஊதா (சரிபார்க்கப்பட்டவை): ${c.purple}</li>
+            <li>🟢 பச்சை (உறுதிப்படுத்தப்பட்டவை): ${c.green}</li>
+        </ul>
+        <p class="badge">⭐ தர மதிப்பீடு: ${m.score} / 100</p>
+        <p class="badge">🏅 நிலை: ${m.level}</p>
+    `;
+}
+
+function renderCharts(c, t) {
+    if (colorChartInstance) colorChartInstance.destroy();
+    if (trendChartInstance) trendChartInstance.destroy();
+
+    colorChartInstance = new Chart(document.getElementById("colorChart"), {
+        type: "doughnut",
+        data: {
+            labels: ["சிவப்பு", "மஞ்சள்", "ஊதா", "பச்சை"],
+            datasets: [{
+                data: [c.red, c.yellow, c.purple, c.green],
+                backgroundColor: ["#e74c3c", "#f1c40f", "#9b59b6", "#2ecc71"]
+            }]
+        },
+        options: { plugins: { title: { display: true, text: 'பக்கங்களின் தர நிலை' } } }
+    });
+
+    const trendLabels = Object.keys(t).sort();
+    trendChartInstance = new Chart(document.getElementById("trendChart"), {
+        type: "line",
+        data: {
+            labels: trendLabels,
+            datasets: [{
+                label: "மாதாந்திர தொகுப்புகள்",
+                data: trendLabels.map(l => t[l]),
+                borderColor: "#3498db",
+                fill: false,
+                tension: 0.1
+            }]
+        }
+    });
+}
+
+function exportJSON() {
+    if (!FINAL_DATA.user) return alert("முதலில் ஆய்வு செய்யவும்");
+    download(JSON.stringify(FINAL_DATA, null, 2), "metrics.json", "application/json");
+}
+
+function exportCSV() {
+    if (!FINAL_DATA.user) return alert("முதலில் ஆய்வு செய்யவும்");
+    const q = FINAL_DATA.quality;
+    const rows = [
+        ["Metric", "Value"],
+        ["User", FINAL_DATA.user],
+        ["Analyzed Edits", q.analyzed_edits],
+        ["Green Pages", q.colors.green],
+        ["Quality Score", q.metrics.score],
+        ["Level", q.metrics.level]
+    ];
+    download(rows.map(r => r.join(",")).join("\n"), "metrics.csv", "text/csv");
+}
+
+function download(data, name, type) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([data], { type }));
+    a.download = name;
+    a.click();
+}
+</script>
+</body>
+</html>
