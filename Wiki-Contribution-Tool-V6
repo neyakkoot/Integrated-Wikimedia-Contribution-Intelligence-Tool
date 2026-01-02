@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கித் திட்டம் ஆய்வி – Community & Contributor Analytics</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    :root { --p-red: #ea4335; --p-yellow: #fbbc04; --p-purple: #a142f4; --p-green: #34a853; --dark: #202124; }
+    body { font-family: 'Inter', sans-serif; background: #f1f3f4; color: var(--dark); margin: 0; padding: 20px; }
+    .container { max-width: 1100px; margin: auto; }
+    
+    /* Stats Cards */
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
+    .stat-card { background: white; padding: 20px; border-radius: 12px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-bottom: 4px solid #ccc; }
+    
+    /* Charts & Tables */
+    .content-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { padding: 12px; border-bottom: 1px solid #eee; text-align: center; }
+    th { background: #f8f9fa; font-size: 0.8rem; text-transform: uppercase; }
+    
+    .score-circle { width: 80px; height: 80px; border-radius: 50%; border: 5px solid var(--p-green); display: flex; align-items: center; justify-content: center; font-size: 1.5rem; font-weight: bold; margin: 10px auto; }
+    .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 2s linear infinite; display: none; margin: 10px auto; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <header style="margin-bottom: 30px; text-align: center;">
+        <h1>📊 விக்கித் திட்டம் ஆய்வி</h1>
+        <p>சமூக பங்களிப்பு மற்றும் தர மேலாண்மை தளம்</p>
+        <div style="background: white; padding: 15px; display: inline-block; border-radius: 50px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+            <input type="text" id="username" placeholder="பயனர் பெயர்" style="border: none; outline: none; padding: 10px; width: 250px; font-size: 1rem;">
+            <button onclick="runAnalysis()" style="background: #1a73e8; color: white; border: none; padding: 10px 25px; border-radius: 50px; cursor: pointer; font-weight: bold;">ஆய்வு செய்</button>
+        </div>
+        <div id="loading" class="loader"></div>
+    </header>
+
+    <div id="results" style="display: none;">
+        <div class="stat-grid">
+            <div class="stat-card" style="border-color: var(--p-red);"><h3>🔴 சிவப்பு</h3><div id="count-red" class="score-val">-</div></div>
+            <div class="stat-card" style="border-color: var(--p-yellow);"><h3>🟡 மஞ்சள்</h3><div id="count-yellow" class="score-val">-</div></div>
+            <div class="stat-card" style="border-color: var(--p-purple);"><h3>🟣 ஊதா</h3><div id="count-purple" class="score-val">-</div></div>
+            <div class="stat-card" style="border-color: var(--p-green);"><h3>🟢 பச்சை</h3><div id="count-green" class="score-val">-</div></div>
+        </div>
+
+        <div class="content-grid">
+            <div class="card">
+                <h3>📈 மாதாந்திர வளர்ச்சிப் போக்கு (Monthly Trends)</h3>
+                <canvas id="trendChart" height="150"></canvas>
+                <div id="trendTable"></div>
+            </div>
+
+            <div class="card" style="text-align: center;">
+                <h3>🏅 தகுதி மதிப்பீடு</h3>
+                <div class="score-circle" id="finalScore">0</div>
+                <p>Quality Score</p>
+                <hr>
+                <h4 id="userLevel">பரிசீலனையில்...</h4>
+                <p id="mentorText" style="font-size: 0.85rem; color: #666;"></p>
+                <button onclick="exportData()" style="width: 100%; margin-top: 20px; background: #34a853; color: white; border: none; padding: 10px; border-radius: 5px; cursor: pointer;">Download Report (CSV)</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const WS_API = "https://ta.wikisource.org/w/api.php?origin=*";
+let CHART_INSTANCE = null;
+let GLOBAL_DATA = {};
+
+async function runAnalysis() {
+    const user = document.getElementById("username").value.trim();
+    if (!user) return alert("பெயர் இடவும்!");
+    
+    document.getElementById("loading").style.display = "block";
+    document.getElementById("results").style.display = "none";
+
+    try {
+        const edits = await fetchEdits(user);
+        const metrics = await processBatchMetrics(edits);
+        renderUI(user, metrics);
+    } catch (e) {
+        alert("தரவு பெறுவதில் சிக்கல்!");
+    }
+
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("results").style.display = "block";
+}
+
+async function fetchEdits(user) {
+    const url = `${WS_API}&action=query&list=usercontribs&ucuser=${user}&uclimit=200&ucnamespace=104&format=json`;
+    const res = await fetch(url).then(r => r.json());
+    return res.query.usercontribs || [];
+}
+
+async function processBatchMetrics(edits) {
+    const pageIds = edits.map(e => e.pageid);
+    const stats = { red: 0, yellow: 0, purple: 0, green: 0, months: {} };
+
+    for (let i = 0; i < pageIds.length; i += 50) {
+        const batch = pageIds.slice(i, i + 50).join('|');
+        const res = await fetch(`${WS_API}&action=query&prop=proofread&pageids=${batch}&format=json`).then(r => r.json());
+        const pages = res.query.pages;
+
+        edits.slice(i, i + 50).forEach(e => {
+            const mKey = e.timestamp.slice(0, 7);
+            if (!stats.months[mKey]) stats.months[mKey] = { total: 0, red: 0, yellow: 0, purple: 0, green: 0 };
+            
+            stats.months[mKey].total++;
+            const p = pages[e.pageid];
+            if (p?.proofread) {
+                const colors = ["red", "yellow", "purple", "green"];
+                const c = colors[p.proofread.level];
+                stats[c]++;
+                stats.months[mKey][c]++;
+            }
+        });
+    }
+    return stats;
+}
+
+function renderUI(user, m) {
+    // 🔴 Color Stats
+    document.getElementById("count-red").innerText = m.red;
+    document.getElementById("count-yellow").innerText = m.yellow;
+    document.getElementById("count-purple").innerText = m.purple;
+    document.getElementById("count-green").innerText = m.green;
+
+    // 🏅 Quality Score Logic
+    const total = m.red + m.yellow + m.purple + m.green || 1;
+    const score = Math.round(((m.green * 1.0 + m.purple * 0.7 + m.yellow * 0.4) / total) * 100);
+    document.getElementById("finalScore").innerText = score;
+
+    let level = "Learner";
+    if (score > 85) level = "Expert Editor";
+    else if (score > 50) level = "Active Contributor";
+    document.getElementById("userLevel").innerText = level;
+    
+    if (score > 85 && m.green > 10) {
+        document.getElementById("mentorText").innerText = "✅ இவர் வழிகாட்டியாக (Mentor) செயல்பட தகுதியானவர்.";
+    }
+
+    // 📈 Chart
+    const labels = Object.keys(m.months).sort();
+    if (CHART_INSTANCE) CHART_INSTANCE.destroy();
+    CHART_INSTANCE = new Chart(document.getElementById("trendChart"), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{ label: 'பச்சை (Validated)', data: labels.map(l => m.months[l].green), borderColor: '#34a853', fill: false }]
+        }
+    });
+
+    // 📊 Month-wise Table
+    let tableHtml = `<table><tr><th>மாதம்</th><th>மொத்தம்</th><th>🟢</th><th>🟣</th><th>🟡</th></tr>`;
+    labels.reverse().forEach(l => {
+        const row = m.months[l];
+        tableHtml += `<tr><td>${l}</td><td>${row.total}</td><td>${row.green}</td><td>${row.purple}</td><td>${row.yellow}</td></tr>`;
+    });
+    document.getElementById("trendTable").innerHTML = tableHtml + `</table>`;
+    
+    GLOBAL_DATA = { user, m, score, level };
+}
+
+function exportData() {
+    const rows = [["Month", "Total", "Green", "Purple", "Yellow"]];
+    Object.keys(GLOBAL_DATA.m.months).forEach(m => {
+        const r = GLOBAL_DATA.m.months[m];
+        rows.push([m, r.total, r.green, r.purple, r.yellow]);
+    });
+    let csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
+    window.open(encodeURI(csvContent));
+}
+</script>
+</body>
+</html>
