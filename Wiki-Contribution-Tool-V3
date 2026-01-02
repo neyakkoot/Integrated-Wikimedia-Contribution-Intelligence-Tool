@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கித் திட்டம் ஆய்வி – Strategic Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    :root { --bg: #f0f2f5; --card: #ffffff; --primary: #1a73e8; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); margin: 0; padding: 20px; }
+    .dashboard { max-width: 1200px; margin: auto; }
+    .header-card { background: var(--primary); color: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }
+    .card { background: var(--card); padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+    
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; border-radius: 8px; overflow: hidden; }
+    th { background: #e8eaed; padding: 12px; text-align: center; font-size: 0.85rem; }
+    td { padding: 10px; border-bottom: 1px solid #eee; text-align: center; font-family: monospace; }
+    
+    .status-active { color: #2ecc71; font-weight: bold; }
+    .status-declining { color: #e74c3c; font-weight: bold; }
+    .insight-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; margin: 5px; background: #f1f3f4; border: 1px solid #dadce0; }
+    
+    .metric-val { font-size: 1.5rem; font-weight: bold; color: var(--primary); }
+    .btn-group { margin-top: 15px; }
+    button { padding: 10px 24px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; }
+    #analyzeBtn { background: #fff; color: var(--primary); }
+</style>
+</head>
+<body>
+
+<div class="dashboard">
+    <div class="header-card">
+        <h1>📊 விக்கிமூலம் மூலோபாய ஆய்வி (Strategic Analytics)</h1>
+        <p>பயனர் திறன், பயிற்சி தாக்கம் மற்றும் சரிபார்ப்புத் தேக்கநிலையைக் கண்டறிதல்</p>
+        <div class="btn-group">
+            <input type="text" id="username" placeholder="பயனர் பெயர்" style="padding: 10px; border-radius: 4px; border: none; width: 250px;">
+            <button id="analyzeBtn" onclick="runStrategicAnalysis()">ஆய்வு செய்</button>
+        </div>
+    </div>
+
+    <div class="grid-container">
+        <div class="card" style="grid-column: span 2;">
+            <h3>📅 மாதாந்திர பங்களிப்பு விபரம் (Sample Output Style)</h3>
+            <div id="tableContainer"></div>
+        </div>
+
+        <div class="card">
+            <h3>💡 மூலோபாயக் குறிப்புகள் (Strategic Insights)</h3>
+            <div id="insightPanel"></div>
+            <canvas id="bottleneckChart"></canvas>
+        </div>
+
+        <div class="card">
+            <h3>📈 வளர்ச்சிப் போக்கு (Training Impact)</h3>
+            <canvas id="trendLineChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+const WS = "https://ta.wikisource.org/w/api.php?origin=*";
+let charts = {};
+
+async function runStrategicAnalysis() {
+    const user = document.getElementById("username").value.trim();
+    if(!user) return;
+
+    // Fetch data
+    const resp = await fetch(`${WS}&action=query&list=usercontribs&ucuser=${user}&ucnamespace=104&uclimit=500&format=json`).then(r => r.json());
+    const edits = resp.query.usercontribs;
+
+    // Process Monthly Data
+    const monthlyData = await processMonthlyStats(edits);
+    
+    renderTable(monthlyData);
+    renderStrategicInsights(monthlyData, edits.length);
+    renderCharts(monthlyData);
+}
+
+async function processMonthlyStats(edits) {
+    const stats = {};
+    const pageBatch = [];
+
+    // Group by Month
+    edits.forEach(e => {
+        const month = e.timestamp.slice(0, 7);
+        if(!stats[month]) stats[month] = { total: 0, red: 0, yellow: 0, purple: 0, green: 0, ids: [] };
+        stats[month].total++;
+        stats[month].ids.push(e.pageid);
+    });
+
+    // Fetch Quality for each month (Simplified batch for performance)
+    for (const month in stats) {
+        const uniqueIds = [...new Set(stats[month].ids)].slice(0, 50); // Limit to 50 unique pages per month for sample
+        const idStr = uniqueIds.join('|');
+        if(!idStr) continue;
+
+        const res = await fetch(`${WS}&action=query&prop=proofread&pageids=${idStr}&format=json`).then(r => r.json());
+        Object.values(res.query.pages).forEach(p => {
+            if(p.proofread) {
+                const lvl = p.proofread.level;
+                if(lvl == 0) stats[month].red++;
+                else if(lvl == 1) stats[month].yellow++;
+                else if(lvl == 2) stats[month].purple++;
+                else if(lvl == 3) stats[month].green++;
+            }
+        });
+    }
+    return stats;
+}
+
+function renderTable(data) {
+    let html = `<table><thead><tr><th>Month</th><th>Total</th><th>🔴</th><th>🟡</th><th>🟣</th><th>🟢</th></tr></thead><tbody>`;
+    Object.keys(data).sort().reverse().forEach(m => {
+        const s = data[m];
+        html += `<tr><td>${m}</td><td><b>${s.total}</b></td><td>${s.red}</td><td>${s.yellow}</td><td>${s.purple}</td><td>${s.green}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+    document.getElementById("tableContainer").innerHTML = html;
+}
+
+function renderStrategicInsights(data, totalCount) {
+    const months = Object.keys(data).sort();
+    const latestMonth = data[months[months.length - 1]];
+    const prevMonth = data[months[months.length - 2]] || latestMonth;
+
+    // Logic 1: Active vs Declining
+    const isActive = latestMonth.total >= prevMonth.total;
+    const statusText = isActive ? 
+        `<span class="status-active">📈 உயரும் பங்களிப்பு</span>` : 
+        `<span class="status-declining">📉 குறையும் பங்களிப்பு</span>`;
+
+    // Logic 2: Validation Bottleneck (High Yellow/Purple, Low Green)
+    const isBottleneck = (latestMonth.yellow + latestMonth.purple) > (latestMonth.green * 2);
+    
+    // Logic 3: Mentor Pipeline
+    const isMentorMaterial = (totalCount > 300 && latestMonth.green > 10);
+
+    document.getElementById("insightPanel").innerHTML = `
+        <div class="metric-val">${statusText}</div>
+        <div class="insight-badge">${isBottleneck ? '⚠️ சரிபார்ப்புத் தேக்கம் (Bottleneck) உள்ளது' : '✅ தங்குதடையற்ற சரிபார்ப்பு'}</div>
+        <div class="insight-badge">${isMentorMaterial ? '⭐ Mentor Pipeline-க்கு தகுதியானவர்' : '📚 பயிற்சியில் உள்ளவர்'}</div>
+        <p style="font-size: 0.9rem; color: #666; margin-top:10px;">
+            கடைசி மாதத்தில் <b>${latestMonth.green}</b> பக்கங்கள் உறுதி செய்யப்பட்டுள்ளன. 
+            இது உங்கள் ஆண்டு அறிக்கைக்கு (Annual Report) தேவையான முக்கியத் தரவு.
+        </p>
+    `;
+}
+
+function renderCharts(data) {
+    const labels = Object.keys(data).sort();
+    const totals = labels.map(l => data[l].total);
+    const greens = labels.map(l => data[l].green);
+
+    if(charts.trend) charts.trend.destroy();
+    charts.trend = new Chart(document.getElementById("trendLineChart"), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'Total Edits', data: totals, borderColor: '#1a73e8', fill: false },
+                { label: 'Validated (Green)', data: greens, borderColor: '#2ecc71', fill: false }
+            ]
+        }
+    });
+
+    if(charts.bottleneck) charts.bottleneck.destroy();
+    charts.bottleneck = new Chart(document.getElementById("bottleneckChart"), {
+        type: 'bar',
+        data: {
+            labels: ['Proofread (Y)', 'Validated (G)'],
+            datasets: [{
+                label: 'கடைசி மாத நிலவரம்',
+                data: [data[labels[labels.length-1]].yellow, data[labels[labels.length-1]].green],
+                backgroundColor: ['#f1c40f', '#2ecc71']
+            }]
+        }
+    });
+}
+</script>
+</body>
+</html>
