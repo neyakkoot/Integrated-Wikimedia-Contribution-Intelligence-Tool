@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கிமூலம் சமூக ஆய்வி - Fixed Metrics</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; padding: 20px; }
+    .container { max-width: 1100px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    .search-area { text-align: center; margin-bottom: 30px; background: #eef2f3; padding: 20px; border-radius: 8px; }
+    input { padding: 12px; width: 60%; border: 1px solid #ccc; border-radius: 5px; }
+    button { padding: 12px 25px; background: #1a73e8; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 12px; text-align: center; }
+    th { background: #f8f9fa; }
+    .status-expert { color: #188038; font-weight: bold; }
+    .loader { border: 5px solid #f3f3f3; border-top: 5px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; display: none; margin: 20px auto; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <div class="search-area">
+        <h2>👥 சமூகப் பங்களிப்பு ஒப்பாய்வி (Fixed Metrics)</h2>
+        <p>பயனர் பெயர்களை கமாவால் (,) பிரித்து உள்ளிடவும்</p>
+        <input type="text" id="userList" placeholder="Info-farmer, Neyakkoo, NithyaSathiyaraj">
+        <button onclick="compareUsers()">ஒப்பிடு</button>
+        <div id="loader" class="loader"></div>
+    </div>
+
+    <div id="outputArea" style="display:none;">
+        <h3>🏅 தரவரிசை (Leaderboard)</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>பயனர்</th>
+                    <th>ஆய்வு செய்த பக்கங்கள்</th>
+                    <th>🔴</th><th>🟡</th><th>🟣</th><th>🟢</th>
+                    <th>திறன் (Score)</th>
+                    <th>நிலை</th>
+                </tr>
+            </thead>
+            <tbody id="leaderboardBody"></tbody>
+        </table>
+        
+        <div style="margin-top: 30px;">
+            <h3>📊 தர ஒப்பீடு (Quality Comparison)</h3>
+            <canvas id="compareChart" height="100"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+const WS_API = "https://ta.wikisource.org/w/api.php?origin=*";
+let chartObj = null;
+
+async function compareUsers() {
+    const input = document.getElementById("userList").value;
+    const users = input.split(',').map(u => u.trim()).filter(u => u);
+    if (users.length === 0) return alert("பெயர்களை உள்ளிடவும்!");
+
+    document.getElementById("loader").style.display = "block";
+    document.getElementById("outputArea").style.display = "none";
+
+    const results = [];
+
+    for (const user of users) {
+        const stats = await getRealtimeStats(user);
+        results.push(stats);
+    }
+
+    renderResults(results);
+    document.getElementById("loader").style.display = "none";
+    document.getElementById("outputArea").style.display = "block";
+}
+
+async function getRealtimeStats(user) {
+    // 1. பயனரின் கடைசி 50 மெய்ப்பு திருத்தங்களை எடுத்தல்
+    const url = `${WS_API}&action=query&list=usercontribs&ucuser=${encodeURIComponent(user)}&ucnamespace=104&uclimit=50&format=json`;
+    const res = await fetch(url).then(r => r.json());
+    const edits = res.query.usercontribs || [];
+    
+    let s = { user, total: edits.length, red: 0, yellow: 0, purple: 0, green: 0 };
+    if (edits.length === 0) return s;
+
+    // 2. அந்தப் பக்கங்களின் தற்போதைய தர நிலையை Batch ஆக சரிபார்த்தல்
+    const pageIds = edits.map(e => e.pageid).join('|');
+    const qUrl = `${WS_API}&action=query&prop=proofread&pageids=${pageIds}&format=json`;
+    const qRes = await fetch(qUrl).then(r => r.json());
+    
+    if (qRes.query && qRes.query.pages) {
+        Object.values(qRes.query.pages).forEach(p => {
+            if (p.proofread) {
+                const lvl = p.proofread.level;
+                if (lvl == 0) s.red++;
+                else if (lvl == 1) s.yellow++;
+                else if (lvl == 2) s.purple++;
+                else if (lvl == 3) s.green++;
+            }
+        });
+    }
+
+    // Quality Score: Green=100%, Purple=70%, Yellow=40%
+    s.score = Math.round(((s.green * 1.0 + s.purple * 0.7 + s.yellow * 0.4) / s.total) * 100) || 0;
+    s.level = s.score > 80 ? "Expert" : s.score > 40 ? "Skilled" : "Learner";
+    
+    return s;
+}
+
+function renderResults(data) {
+    data.sort((a, b) => b.score - a.score);
+    let html = "";
+    data.forEach(d => {
+        html += `<tr>
+            <td><b>${d.user}</b></td>
+            <td>${d.total}</td>
+            <td>${d.red}</td><td>${d.yellow}</td><td>${d.purple}</td><td style="background:#e6ffed">${d.green}</td>
+            <td><b>${d.score}</b></td>
+            <td class="status-expert">${d.level}</td>
+        </tr>`;
+    });
+    document.getElementById("leaderboardBody").innerHTML = html;
+
+    // Chart Update
+    if (chartObj) chartObj.destroy();
+    chartObj = new Chart(document.getElementById("compareChart"), {
+        type: 'bar',
+        data: {
+            labels: data.map(d => d.user),
+            datasets: [
+                { label: 'Green (Validated)', data: data.map(d => d.green), backgroundColor: '#188038' },
+                { label: 'Yellow (Proofread)', data: data.map(d => d.yellow), backgroundColor: '#f9ab00' }
+            ]
+        }
+    });
+}
+</script>
+</body>
+</html>
