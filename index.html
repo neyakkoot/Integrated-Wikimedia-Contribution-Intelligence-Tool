@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<title>விக்கித் திட்டம் ஆய்வி – All Wikimedia Dashboard</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body { font-family: sans-serif; padding: 20px; }
+input, button, select { padding: 6px; margin: 5px; }
+table { border-collapse: collapse; margin-top: 10px; }
+th, td { border: 1px solid #999; padding: 6px 10px; text-align: center; }
+th { background: #f0f0f0; }
+.badge { font-weight: bold; }
+</style>
+</head>
+
+<body>
+
+<h2>📊 விக்கித் திட்டம் ஆய்வி</h2>
+<h3>All Wikimedia Projects – Contribution Intelligence</h3>
+
+<input type="text" id="username" placeholder="Wikimedia User name">
+
+<select id="mode">
+  <option value="daily">Daily</option>
+  <option value="weekly">Weekly</option>
+  <option value="monthly" selected>Monthly</option>
+  <option value="yearly">Yearly</option>
+</select>
+
+<button onclick="analyze()">Analyze</button>
+
+<div id="output"></div>
+
+<canvas id="timeChart" height="120"></canvas>
+<canvas id="projectChart" height="120"></canvas>
+
+<hr>
+<h3>👥 Community Snapshot (All Projects)</h3>
+<div id="community"></div>
+
+<script>
+/* ================= PROJECTS ================= */
+const PROJECTS = {
+  wikipedia: "https://ta.wikipedia.org/w/api.php",
+  wikisource: "https://ta.wikisource.org/w/api.php",
+  wiktionary: "https://ta.wiktionary.org/w/api.php",
+  wikibooks: "https://ta.wikibooks.org/w/api.php",
+  wikinews: "https://ta.wikinews.org/w/api.php",
+  wikidata: "https://www.wikidata.org/w/api.php",
+  commons: "https://commons.wikimedia.org/w/api.php"
+};
+
+/* ================= TIME KEY ================= */
+function getTimeKey(ts, mode) {
+  const d = new Date(ts);
+
+  if (mode === "daily") return d.toISOString().slice(0,10);
+
+  if (mode === "weekly") {
+    const start = new Date(d.getFullYear(), 0, 1);
+    const week = Math.ceil((((d - start) / 86400000) + start.getDay()+1)/7);
+    return `${d.getFullYear()}-W${week}`;
+  }
+
+  if (mode === "monthly")
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+
+  if (mode === "yearly")
+    return `${d.getFullYear()}`;
+}
+
+/* ================= FETCH ALL PROJECT EDITS ================= */
+async function getAllProjectEdits(user) {
+  let all = [];
+
+  for (let [project, api] of Object.entries(PROJECTS)) {
+    const url =
+      `${api}?origin=*` +
+      `&action=query&list=usercontribs` +
+      `&ucuser=${encodeURIComponent(user)}` +
+      `&uclimit=50&format=json`;
+
+    const data = await fetch(url).then(r => r.json());
+    if (data.query?.usercontribs) {
+      data.query.usercontribs.forEach(e => {
+        e.project = project;
+        all.push(e);
+      });
+    }
+  }
+  return all;
+}
+
+/* ================= AGGREGATIONS ================= */
+function aggregateByTime(edits, mode) {
+  const map = {};
+  edits.forEach(e => {
+    const key = getTimeKey(e.timestamp, mode);
+    map[key] = (map[key] || 0) + 1;
+  });
+  return map;
+}
+
+function aggregateByProject(edits) {
+  const map = {};
+  edits.forEach(e => {
+    map[e.project] = (map[e.project] || 0) + 1;
+  });
+  return map;
+}
+
+/* ================= MAIN ================= */
+async function analyze() {
+  const user = document.getElementById("username").value.trim();
+  const mode = document.getElementById("mode").value;
+  if (!user) return alert("பயனர் பெயர் இடவும்");
+
+  document.getElementById("output").innerHTML = "⏳ தரவு பெறப்படுகிறது...";
+
+  const edits = await getAllProjectEdits(user);
+
+  const timeData = aggregateByTime(edits, mode);
+  const projectData = aggregateByProject(edits);
+
+  document.getElementById("output").innerHTML = `
+    <h3>👤 ${user}</h3>
+    <p class="badge">✏️ மொத்த திருத்தங்கள்: ${edits.length}</p>
+    <p>⏱️ Time mode: <b>${mode}</b></p>
+  `;
+
+  renderTimeChart(timeData, mode);
+  renderProjectChart(projectData);
+  renderCommunity(projectData);
+}
+
+/* ================= CHARTS ================= */
+function renderTimeChart(data, mode) {
+  const labels = Object.keys(data).sort();
+  const values = labels.map(k => data[k]);
+
+  new Chart(document.getElementById("timeChart"), {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        label: `Edits (${mode})`,
+        data: values,
+        backgroundColor: "#4CAF50"
+      }]
+    }
+  });
+}
+
+function renderProjectChart(data) {
+  new Chart(document.getElementById("projectChart"), {
+    type: "pie",
+    data: {
+      labels: Object.keys(data),
+      datasets: [{
+        data: Object.values(data),
+        backgroundColor: [
+          "#2196F3","#4CAF50","#FF9800",
+          "#9C27B0","#795548","#607D8B","#F44336"
+        ]
+      }]
+    }
+  });
+}
+
+/* ================= COMMUNITY VIEW ================= */
+function renderCommunity(data) {
+  let rows = "";
+  Object.entries(data).forEach(([p,c]) => {
+    rows += `<tr><td>${p}</td><td>${c}</td></tr>`;
+  });
+
+  document.getElementById("community").innerHTML = `
+    <table>
+      <tr><th>Project</th><th>Total edits</th></tr>
+      ${rows}
+    </table>
+  `;
+}
+</script>
+
+</body>
+</html>
